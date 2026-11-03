@@ -10,7 +10,9 @@ pub mod map;
 pub mod ray;
 pub mod render;
 pub mod rng;
+pub mod tape;
 pub mod trig;
+pub mod verify;
 
 pub use game::{Game, input};
 pub use render::{FB_BYTES, H, PALETTE, W};

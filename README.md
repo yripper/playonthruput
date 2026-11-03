@@ -91,3 +91,16 @@ A contract raycasts one 160-column view and emits ~320 bytes: wall distance + te
   What that means at 1e9 gas per tx:
   - **~113k tics ≈ 54 min of play with 64 creatures** verified in one tx (target was ≤30k gas per tic).
   - Rendering: ~1,600 frames of compute per tx. The real cap is events (≤1,000 × 1 KB per tx → ~125 frames).
+- 2026-11-03: **verified runs (Mode A) working.**
+  - **Tape format** (`engine/src/tape.rs`): 20-byte header + 1 byte per tic + 8-byte footer. A 10-minute run is 21,028 bytes.
+  - **Shared rules** (`engine/src/verify.rs`): 24 creatures, 1,000 points per kill, plus a speed bonus for clearing the level.
+  - **`contract/` (`runs`):**
+    - per-epoch seeds (Kalien's scheme) plus a per-player run seed, so tapes can't be copied between players;
+    - `submit_run` replays the tape and keeps the best score per player per epoch.
+  - **Tests:** 23 engine, 13 native contract and 3 RV32, all passing.
+
+  | Run length | Tape | Gas (RV32, aim bot, 24 creatures) |
+  |---|---|---|
+  | 2.5 min (5,250 tics) | 5,278 B | 8.7M |
+  | 5 min (10,500 tics) | 10,528 B | 30.9M |
+  | 10 min (21,000 tics, max) | 21,028 B | **70.9M (7% of the 1e9 cap)** |

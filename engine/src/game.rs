@@ -78,6 +78,8 @@ pub struct Game {
     pub actor_count: usize,
     pub tic: u32,
     pub kills: u32,
+    /// Tic on which the last creature died; 0 while any are alive.
+    pub cleared_at: u32,
     rng: Rng,
 }
 
@@ -121,6 +123,7 @@ impl Game {
             actor_count: actors.min(MAX_ACTORS),
             tic: 0,
             kills: 0,
+            cleared_at: 0,
             rng: Rng::new(seed),
         };
         game.spawn_actors(sx, sy);
@@ -222,6 +225,9 @@ impl Game {
             if a.hp <= 0 {
                 a.state = ActorState::Dead;
                 self.kills += 1;
+                if self.kills as usize == self.actor_count {
+                    self.cleared_at = self.tic;
+                }
             }
         }
     }
@@ -274,7 +280,7 @@ impl Game {
         for v in [p.x, p.y, p.angle as i32, p.hp, p.cooldown as i32] {
             h = fnv1a(h, &v.to_le_bytes());
         }
-        for v in [self.tic, self.kills, self.rng.state()] {
+        for v in [self.tic, self.kills, self.cleared_at, self.rng.state()] {
             h = fnv1a(h, &v.to_le_bytes());
         }
         for a in &self.actors[..self.actor_count] {
