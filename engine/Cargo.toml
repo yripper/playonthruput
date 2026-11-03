@@ -1,0 +1,8 @@
+[package]
+name = "doom-lite-engine"
+version = "0.1.0"
+edition = "2024"
+description = "Deterministic, integer-only, no_std game core shared by the browser client and the Thruput contract"
+
+[lib]
+name = "engine"
