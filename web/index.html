@@ -2,12 +2,101 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>web</title>
+    <title>playonthruput: an arena where the chain is the server</title>
+    <meta
+      name="description"
+      content="A deathmatch arena with no game server. Thruput simulates every tic, checks every shot, and renders the kill cam on-chain."
+    />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23282830'/%3E%3Cellipse cx='8' cy='9' rx='5' ry='6' fill='%23aa1e1e'/%3E%3Crect x='5' y='6' width='2' height='2' fill='%23e6dc78'/%3E%3Crect x='9' y='6' width='2' height='2' fill='%23e6dc78'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
   </head>
   <body>
-    <div id="app"></div>
+    <header class="masthead">
+      <h1>playonthruput</h1>
+      <p class="tagline">A deathmatch arena with no game server. The chain simulates it.</p>
+    </header>
+
+    <main class="stage">
+      <section class="arena" aria-label="Arena">
+        <div class="screen" id="screen">
+          <canvas id="view" width="160" height="100" aria-label="Your view of the arena"></canvas>
+          <div class="crosshair" aria-hidden="true"></div>
+          <div class="hud" id="hud" hidden>
+            <span class="hp" id="hp">100</span>
+            <span class="frags" id="frags">0 frags</span>
+          </div>
+
+          <div class="overlay" id="lobby">
+            <h2>Sixteen seats, one room, no server.</h2>
+            <p>
+              Every move you make goes into a Thruput transaction. The chain runs the game four seconds behind you,
+              checks every shot against what you saw, and draws the kill cam itself.
+            </p>
+            <button id="enter" class="primary">Enter the arena</button>
+            <p class="small" id="lobby-status">Watching the arena. A throwaway key is made for you when you enter.</p>
+          </div>
+
+          <div class="overlay death" id="death" hidden>
+            <figure class="killcam">
+              <canvas id="killcam" width="160" height="100" aria-label="Kill cam"></canvas>
+              <figcaption id="killcam-caption">Waiting for the chain to render your death…</figcaption>
+            </figure>
+            <p class="respawn" id="respawn">Respawning</p>
+          </div>
+        </div>
+
+        <div class="ledger" aria-label="Netcode">
+          <div class="clock you">
+            <span class="clock-label">Your screen</span>
+            <span class="clock-value" id="you-tic">tic —</span>
+          </div>
+          <div class="gap" aria-hidden="true">
+            <div class="gap-bar"><div class="gap-fill" id="gap-fill"></div></div>
+          </div>
+          <div class="clock chain">
+            <span class="clock-label">Chain confirmed</span>
+            <span class="clock-value" id="chain-tic">tic —</span>
+            <span class="clock-meta" id="chain-meta">waiting for the first block</span>
+          </div>
+        </div>
+      </section>
+
+      <aside class="rail">
+        <section aria-labelledby="board-title">
+          <h2 id="board-title">In the room</h2>
+          <ol class="board" id="board"></ol>
+          <p class="empty" id="board-empty">Nobody's here. Be first.</p>
+        </section>
+        <section aria-labelledby="feed-title">
+          <h2 id="feed-title">Kills, as the chain saw them</h2>
+          <ol class="feed" id="feed"></ol>
+        </section>
+        <section class="controls" aria-labelledby="controls-title">
+          <h2 id="controls-title">Controls</h2>
+          <dl>
+            <dt>Move</dt><dd>W A S D</dd>
+            <dt>Turn</dt><dd>Mouse (click the view) or ← →</dd>
+            <dt>Fire</dt><dd>Click or Space</dd>
+            <dt>Spectate</dt><dd>[ and ] switch player</dd>
+          </dl>
+        </section>
+      </aside>
+    </main>
+
+    <footer class="colophon">
+      <p>
+        Arena contract
+        <span id="contract-address" class="mono"></span>
+        on Thruput Futurenet. Your session key lives in this browser only.
+      </p>
+    </footer>
+
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
