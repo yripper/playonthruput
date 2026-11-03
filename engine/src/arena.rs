@@ -112,6 +112,7 @@ impl Default for KillLog {
     }
 }
 
+#[derive(Clone)]
 pub struct Arena {
     /// Unix time (ns) of tic 0.
     pub genesis_ns: u64,

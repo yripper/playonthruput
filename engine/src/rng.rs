@@ -1,4 +1,5 @@
 /// xorshift32. Seeded per run so a replay reproduces every roll.
+#[derive(Clone)]
 pub struct Rng(u32);
 
 impl Rng {

@@ -1,0 +1,19 @@
+[package]
+name = "doom-lite-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "The arena engine for browsers: the same simulation the chain runs."
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+engine = { package = "doom-lite-engine", path = "../engine" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
