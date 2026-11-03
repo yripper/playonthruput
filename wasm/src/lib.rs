@@ -185,19 +185,18 @@ pub extern "C" fn snapshot(which: u32) {
     }
 }
 
-/// Renders into `RGBA`. Playing (`spectate` = 0): the predicted present from
-/// `slot`'s eyes, others where the chain will check shots against them.
-/// Spectating: the confirmed arena from `slot`'s eyes, everyone exact.
+/// Renders the predicted arena into `RGBA` from `slot`'s eyes. Playing
+/// (`spectate` = 0): others appear where the chain will check shots against
+/// them (`REWIND` tics back). Spectating: everyone at their exact position,
+/// for a prediction that stops where everyone's inputs are known.
 #[unsafe(no_mangle)]
 pub extern "C" fn render(slot: u32, spectate: u32) {
     let slot = slot as usize % MAX_PLAYERS;
+    let a = PREDICTED.get();
     let mut sprites = [Sprite { x: 0, y: 0, color: 0 }; MAX_PLAYERS];
-    let (source, count) = if spectate == 0 {
-        let a = PREDICTED.get();
-        let n = a.sprites_seen_by(Some(slot), a.tic.saturating_sub(1), &mut sprites);
-        (&*a, n)
+    let count = if spectate == 0 {
+        a.sprites_seen_by(Some(slot), a.tic.saturating_sub(1), &mut sprites)
     } else {
-        let a = CONFIRMED.get();
         let mut n = 0;
         for (o, p) in a.players.iter().enumerate() {
             if o != slot && p.active && p.alive {
@@ -205,9 +204,9 @@ pub extern "C" fn render(slot: u32, spectate: u32) {
                 n += 1;
             }
         }
-        (&*a, n)
+        n
     };
-    let p = &source.players[slot];
+    let p = &a.players[slot];
     let view = View { x: p.x, y: p.y, angle: p.angle };
     render::render_view(&ARENA, &view, &sprites[..count], FB.get());
     to_rgba(FB.get(), RGBA.get());
