@@ -1,6 +1,44 @@
-# doom-lite (working name)
+# playonthruput (repo: doom-lite)
 
-An **original** retro first-person shooter, in the spirit of early-90s corridor shooters, whose runs are verified on Thruput. It uses our own engine, levels and art. It is not a port or clone of DOOM.
+An **original** retro first-person deathmatch where **the chain is the game server**. It uses our own engine, map and art; it is not a port or clone of DOOM. There is no backend: a static site talks to Thruput Futurenet directly.
+
+- **Arena contract (Futurenet):** `HXWNvZQfn4YnALC83kXWNd9ccu8ytjFvcfv3n8kKuh3Y`
+- **Run the client:** `cd web && npm install && npm run dev`. `npm run build` rebuilds the wasm engine and the static site into `web/dist`.
+
+## How the arena works
+
+```
+browser (wasm engine)                     Thruput (arena contract, RV32)
+ predict present from last state ──┐
+ send_inputs(start_tic, buttons) ──┼──► RCQ queue (fixed 256 B entries, any # of txs/block)
+ crank() every block (1/n odds) ───┘──► crank: drain queue → simulate to now − 4 s
+ getStorage ×3 (4 KiB chunks)  ◄──────── state: 9,217 B arena in 3 bytestrings
+ getEvents: Frag, KillCam      ◄──────── kill cam rendered + RLE-coded on chain
+```
+
+- **Lockstep with a delay.** The chain simulates `SIM_DELAY` = 140 tics (4 s) behind its block clock, so every player's inputs for a tic land before that tic is simulated. Browsers replay their own unconfirmed inputs on top of the last confirmed state to show the present.
+- **Favor the shooter.** Other players are drawn `REWIND` = 105 tics (3 s) in the past, where their inputs are already known, and shots are checked against those same rewound positions (128-tic position history). What you saw is what you hit.
+- **One engine, three targets.** `engine/` is `no_std` integer-only Rust; it compiles to RV32 for the contract and to a 16 KB wasm module for browsers, so chain/browser parity is by construction (tests check state hashes match byte for byte).
+- **Kill cam.** For every kill the crank renders the killer's 160×100 view at the fatal shot and emits it RLE-coded (~580 B) in a `KillCam` event. The victim's browser shows the chain's frame.
+- **Session keys.** Each browser makes a throwaway Ed25519 key, funds it from the Futurenet faucet (`faucet_requestAirdrop`), and signs its own transactions.
+
+| Arena measurement (RV32) | Result |
+|---|---|
+| Crank, 16 players fighting, kill cams included (worst) | **3.0M gas** (0.3% of the 1e9 cap) |
+| Crank catching up 280 tics | 0.6–0.9M gas |
+| Peak crank stack | 13.7 KiB of a 20 KiB stack |
+| Live crank on Futurenet, 1 player, 785 tics | 650k gas |
+| Browser prediction, 600 tics / render one frame | 4.5 ms / 1.4 ms (Node, cold) |
+
+**Chain facts this design rests on** (verified against source or the live RPC):
+- Contract return values are capped at **1,024 B** when the chain config doesn't state `maxReturnBufferLen`, and Futurenet doesn't (`thruput-xdr` `network_config.rs:292-295`). So state is read with `getStorage`, not view calls.
+- Futurenet states `maxBytestringLen` 4096 (`getChainConfig`); the mock test env defaults to 1024, so tests set it explicitly.
+- The RV32 guest heap is a bump allocator that never frees (`thruput-rv32-runtime` `allocator.rs`). The crank consumes queue entries with `try_consume_sized` into the stack and builds the arena in place on the heap.
+- The public RPC allows any CORS origin and the faucet needs no captcha, which is what makes "no backend" possible.
+
+## Earlier work in this repo
+
+The engine started as a single-player campaign with verified runs (Kalien's tape-replay pattern), kept in `contract/` (`runs`) and `probe/`. That history is below.
 
 Research inputs:
 - `../../resources/kalien-thruput`: Asteroids, with tapes replayed on-chain.
@@ -104,3 +142,9 @@ A contract raycasts one 160-column view and emits ~320 bytes: wall distance + te
   | 2.5 min (5,250 tics) | 5,278 B | 8.7M |
   | 5 min (10,500 tics) | 10,528 B | 30.9M |
   | 10 min (21,000 tics, max) | 21,028 B | **70.9M (7% of the 1e9 cap)** |
+- 2026-11-03: **multiplayer arena live on Futurenet.**
+  - `engine/src/arena.rs`: 16-player lockstep deathmatch, input and position rings, lag-compensated hitscan, spawn protection, respawn, idle kick, fixed binary state. `engine/src/rle.rs`: kill-cam frame coding.
+  - `arena/`: the contract (`join`, `send_inputs`, `crank`, `state_keys`, `state_slice`). Tests: 10 native (including chain/local state-hash parity and a chain-rendered kill cam matching the local render pixel for pixel), 2 RV32 (parity and gas).
+  - `wasm/`: the engine for browsers. `web/`: the Vite client.
+  - Verified with two headless Chrome players on Futurenet: seated within ~8 s, shots and kills confirmed on chain, kill cam shown on the victim's screen.
+  - Bug found live: the crank that seats the first player in a sleeping arena also skips ahead, and the idle kick removed that player at once. Fixed in `skip_to`.

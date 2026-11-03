@@ -24,6 +24,8 @@ const POLL_STATE_MS = 1000;
 const POLL_EVENTS_MS = 2000;
 const CRANK_EVERY_MS = 2000;
 const FEED_LEN = 12;
+/** How long the kill cam stays up after a death is learned of. */
+const DEATH_SCREEN_MS = 4500;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const els = {
@@ -265,11 +267,13 @@ function renderBoard(): void {
 
 function renderFeed(): void {
   const me = session?.address;
-  const who = (addr: string) => (addr === me ? 'you' : shortAddress(addr));
+  // Same names as the scoreboard; the address is kept in the tooltip.
+  const who = (addr: string, slot: number) => (addr === me ? 'you' : `player ${slot + 1}`);
   els.feed.replaceChildren(
     ...feed.map((f) => {
       const li = document.createElement('li');
-      li.textContent = `${who(f.killer)} fragged ${who(f.victim)}`;
+      li.textContent = `${who(f.killer, f.killerSlot)} fragged ${who(f.victim, f.victimSlot)}`;
+      li.title = `${f.killer} fragged ${f.victim}`;
       const meta = document.createElement('span');
       meta.className = 'meta';
       meta.textContent = `block ${f.blockHeight}, tic ${f.tic}`;
@@ -280,11 +284,16 @@ function renderFeed(): void {
 }
 
 let shownCam: KillCamEvent | null = null;
+// Other players' shots reach this browser seconds late, often after the
+// 2-second respawn, so a death is noticed by the deaths counter going up
+// rather than by catching the player dead.
+let knownDeaths = -1;
+let deathScreenUntil = 0;
 
 function renderDeath(me: PlayerView, present: number): void {
   els.death.hidden = false;
   const secs = Math.max(0, (me.respawnAt - present) / engine.ticsPerSecond);
-  els.respawn.textContent = secs > 0 ? `Respawning in ${secs.toFixed(1)} s` : 'Respawning';
+  els.respawn.textContent = !me.alive && secs > 0 ? `Respawning in ${secs.toFixed(1)} s` : 'Back in. Click to play.';
   const recent = cams.filter((c) => c.victimSlot === mySlot && c.tic > present - engine.simDelay * 4);
   const cam = recent.at(-1);
   if (cam && cam !== shownCam) {
@@ -340,10 +349,12 @@ function frame(): void {
     els.hp.textContent = String(Math.max(0, me.hp));
     els.hp.classList.toggle('low', me.hp <= 30);
     els.frags.textContent = `${me.frags} frag${me.frags === 1 ? '' : 's'}`;
-    if (me.alive) {
-      els.death.hidden = true;
-    } else {
+    if (knownDeaths >= 0 && me.deaths > knownDeaths) deathScreenUntil = Date.now() + DEATH_SCREEN_MS;
+    knownDeaths = me.deaths;
+    if (!me.alive || Date.now() < deathScreenUntil) {
       renderDeath(me, present);
+    } else {
+      els.death.hidden = true;
     }
   }
   renderLedger(present);
