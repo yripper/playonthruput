@@ -12,8 +12,9 @@ const MAX_RUN: usize = 16 + 255;
 /// Worst case: every pixel differs from its neighbour.
 pub const MAX_ENCODED: usize = PIXELS;
 
-/// Encodes `fb` into `out`, returning the encoded length.
-pub fn encode(fb: &[u8; FB_BYTES], out: &mut [u8; MAX_ENCODED]) -> usize {
+/// Encodes `fb` into `out`, returning the encoded length, or `None` if it
+/// doesn't fit (callers size `out` to what they can ship).
+pub fn encode(fb: &[u8; FB_BYTES], out: &mut [u8]) -> Option<usize> {
     let mut len = 0;
     let mut i = 0;
     while i < PIXELS {
@@ -23,16 +24,16 @@ pub fn encode(fb: &[u8; FB_BYTES], out: &mut [u8; MAX_ENCODED]) -> usize {
             run += 1;
         }
         if run <= LONG as usize {
-            out[len] = color << 4 | (run - 1) as u8;
+            *out.get_mut(len)? = color << 4 | (run - 1) as u8;
             len += 1;
         } else {
-            out[len] = color << 4 | LONG;
-            out[len + 1] = (run - 16) as u8;
+            *out.get_mut(len)? = color << 4 | LONG;
+            *out.get_mut(len + 1)? = (run - 16) as u8;
             len += 2;
         }
         i += run;
     }
-    len
+    Some(len)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -310,12 +310,22 @@ fn kill_cam_renders_and_compresses() {
     assert_eq!(engine::render::pixel(&fb, 80, 50), PLAYER_COLORS[b]);
 
     let mut enc = [0u8; rle::MAX_ENCODED];
-    let n = rle::encode(&fb, &mut enc);
+    let n = rle::encode(&fb, &mut enc).unwrap();
     let mut back = [0u8; FB_BYTES];
     rle::decode(&enc[..n], &mut back).unwrap();
     assert_eq!(frame_hash(&back), frame_hash(&fb));
     assert!(n <= 4 * 1000, "kill cam should fit in 4 events, got {n} bytes");
     eprintln!("kill cam: {n} bytes");
+}
+
+#[test]
+fn rle_encode_reports_overflow() {
+    let mut fb = [0u8; FB_BYTES];
+    for (i, b) in fb.iter_mut().enumerate() {
+        *b = (i % 7) as u8 | 0x50;
+    }
+    let mut small = [0u8; 100];
+    assert_eq!(rle::encode(&fb, &mut small), None);
 }
 
 #[test]

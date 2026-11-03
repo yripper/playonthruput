@@ -152,6 +152,21 @@ impl Arena {
         }
     }
 
+    /// `new`, in place. The arena is ~9 KiB, and a contract can't afford the
+    /// stack copies a by-value constructor makes.
+    pub fn reset(&mut self, genesis_ns: u64, seed: u32) {
+        self.genesis_ns = genesis_ns;
+        self.tic = 0;
+        self.rng = Rng::new(seed);
+        self.players = [Player::default(); MAX_PLAYERS];
+        for ring in self.inputs.iter_mut() {
+            ring.fill(0);
+        }
+        for ring in self.history.iter_mut() {
+            ring.fill([0; 2]);
+        }
+    }
+
     pub fn slot_of(&self, id: &[u8; 32]) -> Option<usize> {
         self.players.iter().position(|p| p.active && &p.id == id)
     }
@@ -422,6 +437,9 @@ pub const STATE_LEN: usize =
     HEADER_LEN + MAX_PLAYERS * PLAYER_LEN + MAX_PLAYERS * INPUT_RING + MAX_PLAYERS * HISTORY_RING * 2;
 pub const CHUNK_LEN: usize = 4096;
 pub const STATE_CHUNKS: usize = STATE_LEN.div_ceil(CHUNK_LEN);
+/// The state as stored: zero-padded to whole chunks, so every chunk has the
+/// same length and can be read into a fixed-size buffer.
+pub const STORED_LEN: usize = STATE_CHUNKS * CHUNK_LEN;
 
 struct Writer<'a> {
     buf: &'a mut [u8],
@@ -502,6 +520,13 @@ impl Arena {
 
     /// Reads an arena written by `encode`.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut arena = Arena::new(0, 0);
+        arena.decode_into(bytes)?;
+        Ok(arena)
+    }
+
+    /// `decode`, in place (see `reset`).
+    pub fn decode_into(&mut self, bytes: &[u8]) -> Result<(), DecodeError> {
         if bytes.len() < STATE_LEN {
             return Err(DecodeError::TooShort);
         }
@@ -509,11 +534,10 @@ impl Arena {
         if r.u8() != STATE_VERSION {
             return Err(DecodeError::BadVersion);
         }
-        let genesis_ns = u64::from_le_bytes(r.take());
-        let tic = r.u32();
-        let rng = Rng::new(r.u32());
-        let mut players = [Player::default(); MAX_PLAYERS];
-        for p in players.iter_mut() {
+        self.genesis_ns = u64::from_le_bytes(r.take());
+        self.tic = r.u32();
+        self.rng = Rng::new(r.u32());
+        for p in self.players.iter_mut() {
             p.id = r.take();
             p.active = r.u8() != 0;
             p.alive = r.u8() != 0;
@@ -528,24 +552,16 @@ impl Arena {
             p.spawned_at = r.u32();
             p.last_input = r.u32();
         }
-        let mut inputs = [[0; INPUT_RING]; MAX_PLAYERS];
-        for ring in inputs.iter_mut() {
-            *ring = r.take();
+        for ring in self.inputs.iter_mut() {
+            ring.copy_from_slice(&bytes[r.at..r.at + INPUT_RING]);
+            r.at += INPUT_RING;
         }
-        let mut history = [[[0; 2]; HISTORY_RING]; MAX_PLAYERS];
-        for ring in history.iter_mut() {
+        for ring in self.history.iter_mut() {
             for pos in ring.iter_mut() {
                 *pos = r.take();
             }
         }
-        Ok(Arena {
-            genesis_ns,
-            tic,
-            rng,
-            players,
-            inputs,
-            history,
-        })
+        Ok(())
     }
 
     /// Hash of the full state, for parity checks between chain and browser.
