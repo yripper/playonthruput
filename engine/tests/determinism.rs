@@ -49,7 +49,7 @@ fn player_cannot_walk_through_walls() {
         game.tick(input::FORWARD);
     }
     let (tx, ty) = (game.player.x >> 16, game.player.y >> 16);
-    assert_eq!(engine::map::tile(tx, ty), engine::map::EMPTY);
+    assert_eq!(engine::map::CAMPAIGN.tile(tx, ty), engine::map::EMPTY);
 }
 
 #[test]

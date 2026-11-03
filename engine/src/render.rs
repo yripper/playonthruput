@@ -3,8 +3,8 @@
 //! Textures are procedural, so no texture data has to be stored or loaded.
 
 use crate::fx::{self, Fx, ONE};
-use crate::game::{ActorState, Game, MAX_ACTORS};
-use crate::map;
+use crate::game::{ActorState, Game};
+use crate::map::{self, CAMPAIGN, Level};
 use crate::ray;
 use crate::trig;
 use crate::{FNV_OFFSET, fnv1a};
@@ -101,8 +101,29 @@ fn wall_texel(tile: u8, u: i32, v: i32, side: u8) -> u8 {
     if side == 1 { SHADE[color as usize] } else { color }
 }
 
-/// A floating creature: an oval body with two glowing eyes. 0 = transparent.
-fn creature_texel(u: i32, v: i32) -> u8 {
+/// Most sprites drawn in one frame.
+pub const MAX_SPRITES: usize = 64;
+/// Body color of campaign creatures.
+pub const CREATURE: u8 = 12;
+
+/// A billboard drawn as an oval figure with glowing eyes in `color`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sprite {
+    pub x: Fx,
+    pub y: Fx,
+    pub color: u8,
+}
+
+/// Where the camera stands and looks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct View {
+    pub x: Fx,
+    pub y: Fx,
+    pub angle: u32,
+}
+
+/// An oval body with two glowing eyes. 0 = transparent.
+fn figure_texel(u: i32, v: i32, color: u8) -> u8 {
     let du = u - TEX / 2;
     let dv = v - 9;
     if du * du * 4 + dv * dv * 3 > 200 {
@@ -110,9 +131,9 @@ fn creature_texel(u: i32, v: i32) -> u8 {
     } else if (5..7).contains(&v) && matches!(u, 5 | 6 | 10 | 11) {
         13
     } else if v > 12 {
-        14
+        SHADE[color as usize]
     } else {
-        12
+        color
     }
 }
 
@@ -126,12 +147,11 @@ struct Camera {
 }
 
 impl Camera {
-    fn from(game: &Game) -> Self {
-        let p = &game.player;
-        let (dir_x, dir_y) = (trig::cos(p.angle), trig::sin(p.angle));
+    fn from(view: &View) -> Self {
+        let (dir_x, dir_y) = (trig::cos(view.angle), trig::sin(view.angle));
         Camera {
-            x: p.x,
-            y: p.y,
+            x: view.x,
+            y: view.y,
             dir_x,
             dir_y,
             plane_x: fx::mul(-dir_y, PLANE_SCALE),
@@ -140,22 +160,35 @@ impl Camera {
     }
 }
 
-/// Renders one frame and returns the per-column wall depth (for callers that
-/// want to composite more sprites).
-pub fn render(game: &Game, fb: &mut [u8; FB_BYTES]) -> [Fx; W] {
-    let cam = Camera::from(game);
-    let mut zbuf = [0; W];
-    draw_walls(&cam, fb, &mut zbuf);
-    draw_actors(game, &cam, fb, &zbuf);
-    zbuf
+/// Renders the campaign from the player's eyes, with living creatures.
+pub fn render(game: &Game, fb: &mut [u8; FB_BYTES]) {
+    let mut sprites = [Sprite { x: 0, y: 0, color: 0 }; MAX_SPRITES];
+    let mut count = 0;
+    for a in game.actors[..game.actor_count].iter() {
+        if a.state != ActorState::Dead && count < MAX_SPRITES {
+            sprites[count] = Sprite { x: a.x, y: a.y, color: CREATURE };
+            count += 1;
+        }
+    }
+    let p = &game.player;
+    let view = View { x: p.x, y: p.y, angle: p.angle };
+    render_view(&CAMPAIGN, &view, &sprites[..count], fb);
 }
 
-fn draw_walls(cam: &Camera, fb: &mut [u8; FB_BYTES], zbuf: &mut [Fx; W]) {
+/// Renders `level` from `view` with `sprites` (at most `MAX_SPRITES` are drawn).
+pub fn render_view(level: &Level, view: &View, sprites: &[Sprite], fb: &mut [u8; FB_BYTES]) {
+    let cam = Camera::from(view);
+    let mut zbuf = [0; W];
+    draw_walls(level, &cam, fb, &mut zbuf);
+    draw_sprites(&cam, &sprites[..sprites.len().min(MAX_SPRITES)], fb, &zbuf);
+}
+
+fn draw_walls(level: &Level, cam: &Camera, fb: &mut [u8; FB_BYTES], zbuf: &mut [Fx; W]) {
     for x in 0..W {
         let camera_x = ((2 * x as i32 - W as i32) * ONE) / W as i32;
         let ray_x = cam.dir_x + fx::mul(cam.plane_x, camera_x);
         let ray_y = cam.dir_y + fx::mul(cam.plane_y, camera_x);
-        let hit = ray::cast(cam.x, cam.y, ray_x, ray_y);
+        let hit = ray::cast(level, cam.x, cam.y, ray_x, ray_y);
         zbuf[x] = hit.dist;
 
         let line = ((((H as i64) << 16) / hit.dist as i64).min(MAX_LINE)) as i32;
@@ -176,15 +209,12 @@ fn draw_walls(cam: &Camera, fb: &mut [u8; FB_BYTES], zbuf: &mut [Fx; W]) {
     }
 }
 
-fn draw_actors(game: &Game, cam: &Camera, fb: &mut [u8; FB_BYTES], zbuf: &[Fx; W]) {
-    // Painter's order: far to near, so nearer creatures overdraw farther ones.
-    let mut order = [0u8; MAX_ACTORS];
-    let mut depth = [0 as Fx; MAX_ACTORS];
+fn draw_sprites(cam: &Camera, sprites: &[Sprite], fb: &mut [u8; FB_BYTES], zbuf: &[Fx; W]) {
+    // Painter's order: far to near, so nearer figures overdraw farther ones.
+    let mut order = [0u8; MAX_SPRITES];
+    let mut depth = [0 as Fx; MAX_SPRITES];
     let mut count = 0;
-    for (i, a) in game.actors[..game.actor_count].iter().enumerate() {
-        if a.state == ActorState::Dead {
-            continue;
-        }
+    for (i, a) in sprites.iter().enumerate() {
         let (dx, dy) = (a.x - cam.x, a.y - cam.y);
         let d = fx::mul(dx, dx) + fx::mul(dy, dy);
         let mut j = count;
@@ -200,7 +230,7 @@ fn draw_actors(game: &Game, cam: &Camera, fb: &mut [u8; FB_BYTES], zbuf: &[Fx; W
 
     let det = fx::mul(cam.plane_x, cam.dir_y) - fx::mul(cam.dir_x, cam.plane_y);
     for &i in &order[..count] {
-        let a = &game.actors[i as usize];
+        let a = &sprites[i as usize];
         let (sx, sy) = (a.x - cam.x, a.y - cam.y);
         // Camera-space coordinates: lateral offset and depth.
         let tx = fx::div(fx::mul(cam.dir_y, sx) - fx::mul(cam.dir_x, sy), det);
@@ -220,7 +250,7 @@ fn draw_actors(game: &Game, cam: &Camera, fb: &mut [u8; FB_BYTES], zbuf: &[Fx; W
             let u = (col - left) * TEX / size;
             for row in top.max(0)..(top + size).min(H as i32) {
                 let v = (row - top) * TEX / size;
-                let color = creature_texel(u, v);
+                let color = figure_texel(u, v, a.color);
                 if color != 0 {
                     put(fb, col as usize, row as usize, color);
                 }

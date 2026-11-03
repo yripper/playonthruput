@@ -2,7 +2,7 @@
 //! here allocates; all state lives in fixed arrays (~1.3 KB).
 
 use crate::fx::{self, Fx, ONE};
-use crate::map;
+use crate::map::{self, CAMPAIGN, Level};
 use crate::ray;
 use crate::rng::Rng;
 use crate::trig;
@@ -83,34 +83,34 @@ pub struct Game {
     rng: Rng,
 }
 
-fn tile_center(t: i32) -> Fx {
+pub fn tile_center(t: i32) -> Fx {
     fx::from_int(t) + ONE / 2
 }
 
-fn blocked(x: Fx, y: Fx, radius: Fx) -> bool {
+pub fn blocked(level: &Level, x: Fx, y: Fx, radius: Fx) -> bool {
     let x0 = fx::to_int(x - radius);
     let x1 = fx::to_int(x + radius);
     let y0 = fx::to_int(y - radius);
     let y1 = fx::to_int(y + radius);
-    map::tile(x0, y0) != map::EMPTY
-        || map::tile(x1, y0) != map::EMPTY
-        || map::tile(x0, y1) != map::EMPTY
-        || map::tile(x1, y1) != map::EMPTY
+    level.tile(x0, y0) != map::EMPTY
+        || level.tile(x1, y0) != map::EMPTY
+        || level.tile(x0, y1) != map::EMPTY
+        || level.tile(x1, y1) != map::EMPTY
 }
 
 /// Axis-separated movement so walls stop one axis and let you slide along them.
-fn slide(x: &mut Fx, y: &mut Fx, dx: Fx, dy: Fx, radius: Fx) {
-    if !blocked(*x + dx, *y, radius) {
+pub fn slide(level: &Level, x: &mut Fx, y: &mut Fx, dx: Fx, dy: Fx, radius: Fx) {
+    if !blocked(level, *x + dx, *y, radius) {
         *x += dx;
     }
-    if !blocked(*x, *y + dy, radius) {
+    if !blocked(level, *x, *y + dy, radius) {
         *y += dy;
     }
 }
 
 impl Game {
     pub fn new(seed: u32, actors: usize) -> Self {
-        let (sx, sy) = map::PLAYER_START;
+        let (sx, sy) = CAMPAIGN.spawns()[0];
         let mut game = Game {
             player: Player {
                 x: tile_center(sx),
@@ -136,7 +136,7 @@ impl Game {
                 let tx = self.rng.below(map::MAP_W as u32) as i32;
                 let ty = self.rng.below(map::MAP_H as u32) as i32;
                 let far = (tx - sx).abs() + (ty - sy).abs() >= SPAWN_MIN_DISTANCE;
-                if far && map::tile(tx, ty) == map::EMPTY {
+                if far && CAMPAIGN.tile(tx, ty) == map::EMPTY {
                     self.actors[i] = Actor {
                         x: tile_center(tx),
                         y: tile_center(ty),
@@ -194,7 +194,7 @@ impl Game {
         }
         let dx = fx::mul(cos, forward) - fx::mul(sin, strafe);
         let dy = fx::mul(sin, forward) + fx::mul(cos, strafe);
-        slide(&mut p.x, &mut p.y, dx, dy, PLAYER_RADIUS);
+        slide(&CAMPAIGN, &mut p.x, &mut p.y, dx, dy, PLAYER_RADIUS);
     }
 
     /// Hitscan: the nearest actor inside a narrow corridor along the view
@@ -202,7 +202,7 @@ impl Game {
     fn fire(&mut self) {
         let p = &self.player;
         let (cos, sin) = (trig::cos(p.angle), trig::sin(p.angle));
-        let wall = ray::cast(p.x, p.y, cos, sin).dist;
+        let wall = ray::cast(&CAMPAIGN, p.x, p.y, cos, sin).dist;
         let mut target = None;
         let mut nearest = wall;
         for (i, a) in self.actors[..self.actor_count].iter().enumerate() {
@@ -248,7 +248,7 @@ impl Game {
             let phase = (self.tic + i as u32) % 4 == 0;
             match a.state {
                 ActorState::Idle => {
-                    if phase && distance < SIGHT_RANGE && ray::line_clear(a.x, a.y, px, py) {
+                    if phase && distance < SIGHT_RANGE && ray::line_clear(&CAMPAIGN, a.x, a.y, px, py) {
                         a.state = ActorState::Chase;
                     }
                 }
@@ -256,10 +256,10 @@ impl Game {
                     let step_x = dx.clamp(-ACTOR_SPEED, ACTOR_SPEED);
                     let step_y = dy.clamp(-ACTOR_SPEED, ACTOR_SPEED);
                     if distance > ONE {
-                        slide(&mut a.x, &mut a.y, step_x, step_y, ACTOR_RADIUS);
+                        slide(&CAMPAIGN, &mut a.x, &mut a.y, step_x, step_y, ACTOR_RADIUS);
                     }
                     let can_attack = phase && a.cooldown == 0 && distance < ATTACK_RANGE;
-                    if can_attack && ray::line_clear(a.x, a.y, px, py) {
+                    if can_attack && ray::line_clear(&CAMPAIGN, a.x, a.y, px, py) {
                         a.cooldown = ACTOR_COOLDOWN;
                         if self.rng.below(256) < 96 {
                             self.player.hp -= 3 + self.rng.below(5) as i32;

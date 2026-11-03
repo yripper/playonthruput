@@ -4,18 +4,20 @@
 
 #![no_std]
 
+pub mod arena;
 pub mod fx;
 pub mod game;
 pub mod map;
 pub mod ray;
 pub mod render;
+pub mod rle;
 pub mod rng;
 pub mod tape;
 pub mod trig;
 pub mod verify;
 
 pub use game::{Game, input};
-pub use render::{FB_BYTES, H, PALETTE, W};
+pub use render::{FB_BYTES, H, PALETTE, Sprite, View, W};
 
 /// FNV-1a over bytes. Cheap checksum used for state and frame hashes.
 pub fn fnv1a(hash: u32, bytes: &[u8]) -> u32 {

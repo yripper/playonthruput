@@ -170,7 +170,7 @@ pub fn bot_inputs(seed: u32, tics: u32) -> Vec<u8> {
         let target = game.actors[..game.actor_count]
             .iter()
             .filter(|a| a.state != ActorState::Dead)
-            .filter(|a| engine::ray::line_clear(p.x, p.y, a.x, a.y))
+            .filter(|a| engine::ray::line_clear(&engine::map::CAMPAIGN, p.x, p.y, a.x, a.y))
             .min_by_key(|a| (a.x - p.x).abs().max((a.y - p.y).abs()));
         let buttons = match target {
             Some(a) => {

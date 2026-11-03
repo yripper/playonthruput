@@ -2,7 +2,7 @@
 //! hitscan weapon (one ray per shot).
 
 use crate::fx::{self, Fx, ONE};
-use crate::map;
+use crate::map::{self, Level};
 
 /// The map border is solid, so a ray crosses at most ~64 cells.
 const MAX_STEPS: u32 = 64;
@@ -28,7 +28,7 @@ fn delta(dir: Fx) -> Fx {
     }
 }
 
-pub fn cast(px: Fx, py: Fx, dir_x: Fx, dir_y: Fx) -> Hit {
+pub fn cast(level: &Level, px: Fx, py: Fx, dir_x: Fx, dir_y: Fx) -> Hit {
     let mut map_x = fx::to_int(px);
     let mut map_y = fx::to_int(py);
     let delta_x = delta(dir_x);
@@ -57,7 +57,7 @@ pub fn cast(px: Fx, py: Fx, dir_x: Fx, dir_y: Fx) -> Hit {
             map_y += step_y;
             side = 1;
         }
-        tile = map::tile(map_x, map_y);
+        tile = level.tile(map_x, map_y);
         if tile != map::EMPTY {
             break;
         }
@@ -79,7 +79,7 @@ pub fn cast(px: Fx, py: Fx, dir_x: Fx, dir_y: Fx) -> Hit {
 
 /// Coarse line of sight: samples the segment every quarter tile. Exactness
 /// doesn't matter for gameplay; determinism does, and this is deterministic.
-pub fn line_clear(x0: Fx, y0: Fx, x1: Fx, y1: Fx) -> bool {
+pub fn line_clear(level: &Level, x0: Fx, y0: Fx, x1: Fx, y1: Fx) -> bool {
     let dx = x1 - x0;
     let dy = y1 - y0;
     let span = dx.unsigned_abs().max(dy.unsigned_abs()) as i32;
@@ -87,7 +87,7 @@ pub fn line_clear(x0: Fx, y0: Fx, x1: Fx, y1: Fx) -> bool {
     for i in 1..steps {
         let x = x0 + (dx as i64 * i as i64 / steps as i64) as Fx;
         let y = y0 + (dy as i64 * i as i64 / steps as i64) as Fx;
-        if map::tile(fx::to_int(x), fx::to_int(y)) != map::EMPTY {
+        if level.tile(fx::to_int(x), fx::to_int(y)) != map::EMPTY {
             return false;
         }
     }
