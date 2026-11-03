@@ -1,0 +1,21 @@
+{
+  "name": "playonthruput",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "wasm": "cd ../wasm && cargo build --release --target wasm32-unknown-unknown && cp target/wasm32-unknown-unknown/release/doom_lite_wasm.wasm ../web/src/engine.wasm",
+    "dev": "vite",
+    "build": "npm run wasm && tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "typescript": "~7.0.2",
+    "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "@thruputchain/client": "0.25.0",
+    "@thruputchain/contract-spec": "^0.19.1",
+    "@thruputchain/protocol": "^0.19.1"
+  }
+}

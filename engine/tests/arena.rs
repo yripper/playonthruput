@@ -335,3 +335,15 @@ fn rle_rejects_malformed_frames() {
     assert_eq!(rle::decode(&[0x00], &mut fb), Err(rle::RleError::Underflow));
     assert_eq!(rle::decode(&[0x0f, 255].repeat(100), &mut fb), Err(rle::RleError::Overflow));
 }
+
+#[test]
+fn joining_an_idle_arena_survives_the_catch_up_skip() {
+    // Nobody cranked for minutes; the crank that seats a player also skips
+    // ahead. The skip isn't the player's idle time.
+    let mut arena = Arena::new(T0, 1);
+    let a = arena.join(&id(1)).unwrap();
+    let mut kills = KillLog::new();
+    arena.advance_to(IDLE_KICK_TICS * 5, &mut kills);
+    assert!(arena.players[a].active);
+    assert!(arena.players[a].alive);
+}

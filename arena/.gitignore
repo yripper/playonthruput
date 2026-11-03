@@ -2,3 +2,4 @@
 /.thruput/
 /node_modules/
 /dist/
+/thruput.toml.lock

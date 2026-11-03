@@ -238,9 +238,14 @@ impl Arena {
     }
 
     /// Jumps forward without simulating: nobody moves, buffered inputs for
-    /// skipped tics are discarded, and history holds still.
+    /// skipped tics are discarded, and history holds still. A skip only
+    /// happens when nobody cranked, so it doesn't count toward anyone's idle
+    /// time (otherwise whoever's join woke the arena would be kicked at once).
     fn skip_to(&mut self, target: u32) {
         let skipped = target - self.tic;
+        for p in self.players.iter_mut().filter(|p| p.active) {
+            p.last_input = p.last_input.max(target);
+        }
         for slot in 0..MAX_PLAYERS {
             let (x, y) = (self.players[slot].x, self.players[slot].y);
             for i in 0..skipped.min(INPUT_RING as u32) {
