@@ -2,11 +2,12 @@
 // - every animation frame: sample input, predict the present, render;
 // - every second: read the confirmed arena from chain storage;
 // - every half second: send this player's new inputs as a transaction;
-// - every block or so: crank the arena (whoever's browser lands it first).
+// - every block: crank the arena (every seated browser).
 
 import './style.css';
 import { type Session, openSession } from './chain';
 import { ARENA_ADDRESS, MAX_BATCH } from './config';
+import { createNetStats } from './debug';
 import { Engine, H, type PlayerView, W } from './engine';
 import { type FragEvent, type KillCamEvent, createEventFeed } from './events';
 import { Controls } from './input';
@@ -22,7 +23,11 @@ const CLOCK_LEAD_MS = 500;
 const SEND_EVERY_MS = 500;
 const POLL_STATE_MS = 1000;
 const POLL_EVENTS_MS = 2000;
+const CRANK_CHECK_MS = 500;
+/** One block. */
 const CRANK_EVERY_MS = 2000;
+/** Without a crank for this long, browsers that aren't seated crank too (a join waits on one). */
+const CRANK_RESCUE_MS = 3000;
 const FEED_LEN = 12;
 /** How long the kill cam stays up after a death is learned of. */
 const DEATH_SCREEN_MS = 4500;
@@ -49,6 +54,7 @@ const els = {
   boardEmpty: $<HTMLParagraphElement>('board-empty'),
   feed: $<HTMLOListElement>('feed'),
   contract: $<HTMLSpanElement>('contract-address'),
+  debug: $<HTMLPreElement>('debug'),
 };
 els.contract.textContent = ARENA_ADDRESS;
 
@@ -65,6 +71,7 @@ let followSlot = 0;
 let haveState = false;
 let stateHeight = 0;
 let players: PlayerView[] = [];
+const net = createNetStats(els.debug);
 
 // Chain time = local time + offset. The newest block is stamped a little
 // before we see it, so the largest sample is the closest estimate.
@@ -81,8 +88,12 @@ async function syncClock(): Promise<void> {
   }
 }
 
+function chainNowMs(): number {
+  return Date.now() + offsetMs;
+}
+
 function presentTic(): number {
-  const ms = Date.now() + offsetMs + CLOCK_LEAD_MS - engine.genesisMs;
+  const ms = chainNowMs() + CLOCK_LEAD_MS - engine.genesisMs;
   return Math.max(0, Math.floor((ms * engine.ticsPerSecond) / 1000));
 }
 
@@ -140,7 +151,9 @@ async function pollState(): Promise<void> {
   try {
     const state = await fetchState();
     if (!state || state.height === stateHeight) return;
+    const before = engine.confirmedTic;
     if (!engine.loadState(state.bytes)) return;
+    if (haveState && engine.confirmedTic > before) net.advanced();
     haveState = true;
     stateHeight = state.height;
     if (!feedPoll) feedPoll = await createEventFeed(Math.max(0, stateHeight - 30));
@@ -154,10 +167,22 @@ async function pollState(): Promise<void> {
   }
 }
 
+// Cranks that share a block simulate the same tics, so a kill can be reported
+// more than once.
+const seenKills = new Set<string>();
+const firstReport = (e: { tic: number; killerSlot: number; victimSlot: number }, kind: string) => {
+  const key = `${kind}:${e.tic}:${e.killerSlot}:${e.victimSlot}`;
+  if (seenKills.has(key)) return false;
+  seenKills.add(key);
+  return true;
+};
+
 async function pollEvents(): Promise<void> {
   if (!feedPoll) return;
   try {
-    const { frags, cams: newCams } = await feedPoll();
+    const page = await feedPoll();
+    const frags = page.frags.filter((f) => firstReport(f, 'frag'));
+    const newCams = page.cams.filter((c) => firstReport(c, 'cam'));
     feed.unshift(...frags.reverse());
     feed.length = Math.min(feed.length, FEED_LEN);
     cams.push(...newCams);
@@ -168,14 +193,27 @@ async function pollEvents(): Promise<void> {
   }
 }
 
-/** Cranks every block or so. With many players, each cranks with 1/n odds, unless the arena is falling behind. */
+/** How long ago the crank behind the confirmed state ran: it simulated up to SIM_DELAY before its block. */
+function msSinceCrank(): number {
+  const crankedAt = engine.genesisMs + ((engine.confirmedTic + engine.simDelay) * 1000) / engine.ticsPerSecond;
+  return chainNowMs() - crankedAt;
+}
+
+let lastCrankPeriod = -1;
+
+/**
+ * Every seated browser cranks once per block. Only one crank per block can
+ * drain the input queue; the chain defers the others to the next block, so
+ * the redundancy keeps every block cranked instead of leaving holes.
+ */
 async function maybeCrank(): Promise<void> {
   if (!session || !haveState) return;
-  const lag = presentTic() - engine.confirmedTic;
-  const active = Math.max(1, players.filter((p) => p.active).length);
-  if (lag > engine.simDelay + 45 || Math.random() < 1 / active) {
-    session.crank().catch((err) => console.warn('crank failed', err));
-  }
+  const period = Math.floor(chainNowMs() / CRANK_EVERY_MS);
+  if (period === lastCrankPeriod) return;
+  if (mySlot < 0 && msSinceCrank() < CRANK_RESCUE_MS) return;
+  lastCrankPeriod = period;
+  net.crankSent();
+  session.crank().catch((err) => console.warn('crank failed', err));
 }
 
 // ---- joining --------------------------------------------------------------
@@ -326,6 +364,7 @@ function frame(): void {
   if (!haveState) return;
   const present = presentTic();
   const seated = mySlot >= 0 && els.lobby.hidden;
+  const started = performance.now();
 
   if (seated) {
     sampleInputs(present);
@@ -343,6 +382,8 @@ function frame(): void {
   const slot = seated ? mySlot : followSlot;
   viewImage.data.set(engine.render(slot, !seated));
   viewCtx.putImageData(viewImage, 0, 0);
+  net.frame(performance.now() - started, (present - engine.confirmedTic) / engine.ticsPerSecond);
+  if (seated) trackSnaps();
 
   if (seated) {
     const me = players[mySlot];
@@ -360,8 +401,20 @@ function frame(): void {
   renderLedger(present);
 }
 
+function trackSnaps(): void {
+  const seen = new Map<number, { x: number; y: number }>();
+  for (const p of players) {
+    if (p.slot === mySlot) continue;
+    const at = engine.seenPosition(p.slot);
+    if (at) seen.set(p.slot, at);
+  }
+  const me = players[mySlot];
+  net.track(seen, me.alive ? { x: me.x, y: me.y } : null);
+}
+
 // Board updates on a slower beat than frames; it's text, not motion.
 setInterval(renderBoard, 500);
+setInterval(net.render, 250);
 
 await syncClock();
 setInterval(() => void syncClock(), 20_000);
@@ -377,5 +430,5 @@ if (mySlot >= 0) {
 setInterval(() => void pollState(), POLL_STATE_MS);
 setInterval(() => void pollEvents(), POLL_EVENTS_MS);
 setInterval(() => void sendInputs(), SEND_EVERY_MS);
-setInterval(() => void maybeCrank(), CRANK_EVERY_MS + Math.random() * 400);
+setInterval(() => void maybeCrank(), CRANK_CHECK_MS);
 requestAnimationFrame(frame);

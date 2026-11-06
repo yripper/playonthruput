@@ -106,6 +106,20 @@ button {
   opacity: 0.8;
 }
 
+/* Netcode readout (` key or ?debug): a dev tool, so plain. */
+.debug {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  margin: 0;
+  padding: 6px 8px;
+  font: 11px/1.4 'JetBrains Mono', monospace;
+  color: #f0f0f0;
+  background: rgb(0 0 0 / 0.7);
+  pointer-events: none;
+  white-space: pre;
+}
+
 .hud {
   position: absolute;
   left: 0;
