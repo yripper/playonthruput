@@ -47,6 +47,9 @@ export async function fetchState(): Promise<ArenaState | null> {
   const items = await call<StorageItem>(
     STATE_KEYS.map((key) => ({ method: 'getStorage', params: { address: ARENA_ADDRESS, key } })),
   );
+  // The chunks are separate reads; a crank landing between them would mix two
+  // states. Skip the poll rather than decode that.
+  if (items.some((it) => it.stateBlockHeight !== items[0].stateBlockHeight)) return null;
   const bytes = new Uint8Array(STATE_KEYS.length * CHUNK_LEN);
   for (const [i, it] of items.entries()) {
     if (!it.item?.bytes) return null;
@@ -65,6 +68,23 @@ export async function sampleClockOffset(): Promise<number> {
   if (!block) return 0;
   const chainMs = Number(BigInt(block.blockTimepoint) / 1_000_000n);
   return chainMs - (sentAt + Date.now()) / 2;
+}
+
+/**
+ * Chain time minus local time, from one of this browser's own transactions:
+ * the stamp of the block it landed in minus when it was sent. Null until it
+ * has landed. The block a transaction lands in is the clock its effects run on.
+ */
+export async function inclusionOffset(transactionHash: string, sentAt: number): Promise<number | null> {
+  const [status] = await call<{ status: string; blockHeight?: string }>([
+    { method: 'getTransactionStatus', params: { transactionHash } },
+  ]);
+  if (status.status !== 'committed' || !status.blockHeight) return null;
+  const [block] = await call<{ blockTimepoint: string } | null>([
+    { method: 'getBlockByHeight', params: { blockHeight: status.blockHeight } },
+  ]);
+  if (!block) return null;
+  return Number(BigInt(block.blockTimepoint) / 1_000_000n) - sentAt;
 }
 
 export interface RawEvent {

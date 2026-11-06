@@ -9,7 +9,7 @@ const s = await openSession();
 await s.ensureFunds();
 const first = await s.crank();
 await new Promise((r) => setTimeout(r, 3000));
-for (let i = 0; i < 5; i++) await s.sendInputs(10 + i, new Uint8Array(4).fill(1));
+await Promise.all(Array.from({ length: Number(process.env.N ?? 5) }, (_, i) => s.sendInputs(10 + i, new Uint8Array(4).fill(1))));
 await new Promise((r) => setTimeout(r, 2500));
 const hashes = [first, ...(await Promise.all([1, 2, 3, 4, 5, 6].map(() => s.crank())))];
 await new Promise((r) => setTimeout(r, 6000));

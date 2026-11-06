@@ -4,7 +4,7 @@ mod common;
 
 use arena::{ArenaError, ArenaOpened, Frag, KillCam, MAX_BATCH, SLICE_LEN};
 use common::*;
-use engine::arena::{Arena, CHUNK_LEN, MAX_PLAYERS, SIM_DELAY, STATE_CHUNKS, STATE_LEN, tic_at};
+use engine::arena::{Arena, CHUNK_LEN, INPUT_RING, MAX_PLAYERS, SIM_DELAY, STATE_CHUNKS, STATE_LEN, tic_at};
 use engine::input::{FIRE, FORWARD, TURN_LEFT, TURN_RIGHT};
 use thruput_sdk::ContractAddress;
 use engine::render::{FB_BYTES, frame_hash};
@@ -149,6 +149,35 @@ fn chain_and_local_simulation_agree() {
     let chain = world.state();
     assert_eq!(chain.tic, local.tic);
     assert_ne!(chain.players[a].x, state.players[a].x, "player 1 should have moved");
+    assert_eq!(state_hash(&chain), state_hash(&local));
+}
+
+/// A crank that comes late finds the newest inputs stamped more than the
+/// input ring past where the arena stopped; they must survive it.
+#[test]
+fn a_late_crank_keeps_the_newest_inputs() {
+    let world = two_players();
+    let state = world.state();
+    let a = state.slot_of(&player(1)).unwrap();
+    // Two blocks without a crank, then the crank comes a block after the
+    // inputs: a 6 s gap, just short of a catch-up skip.
+    for _ in 0..2 {
+        world.next_block();
+    }
+    // What a browser stamps: the chain clock plus half a second.
+    let present = tic_at(state.genesis_ns, world.now_ns()) + 17;
+    assert!(present >= state.tic + INPUT_RING as u32, "the test needs inputs past the ring");
+    world.send(&player(1), present - 8, &[FORWARD; 16]);
+    world.next_block();
+
+    let mut local = copy(&state);
+    local_crank(&mut local, world.crank_target(state.genesis_ns), &[(a, present - 8, vec![FORWARD; 16])]);
+    world.crank();
+    let chain = world.state();
+    assert_eq!(chain.players[a].last_input, present + 7);
+    for t in present - 8..present + 8 {
+        assert_eq!(chain.input_at(a, t), FORWARD, "tic {t} survived the crank");
+    }
     assert_eq!(state_hash(&chain), state_hash(&local));
 }
 

@@ -11,7 +11,7 @@ import { createNetStats } from './debug';
 import { Engine, H, type PlayerView, W } from './engine';
 import { type FragEvent, type KillCamEvent, createEventFeed } from './events';
 import { Controls } from './input';
-import { fetchState, sampleClockOffset } from './rpc';
+import { fetchState, inclusionOffset, sampleClockOffset } from './rpc';
 
 /** The engine's palette (engine/src/render.rs), for scoreboard swatches. */
 const PALETTE = [
@@ -20,14 +20,15 @@ const PALETTE = [
 ];
 /** Stamp inputs slightly ahead of the estimated chain clock: late stamps can miss their tic, early ones only buffer. */
 const CLOCK_LEAD_MS = 500;
-const SEND_EVERY_MS = 500;
+/** Sends overlap (nonces are random), so an input waits at most this long to leave. */
+const SEND_EVERY_MS = 250;
 const POLL_STATE_MS = 1000;
 const POLL_EVENTS_MS = 2000;
 const CRANK_CHECK_MS = 500;
 /** One block. */
 const CRANK_EVERY_MS = 2000;
-/** Without a crank for this long, browsers that aren't seated crank too (a join waits on one). */
-const CRANK_RESCUE_MS = 3000;
+/** Without a new state for this long, browsers that aren't seated crank too (a join waits on one). */
+const CRANK_RESCUE_MS = 5000;
 const FEED_LEN = 12;
 /** How long the kill cam stays up after a death is learned of. */
 const DEATH_SCREEN_MS = 4500;
@@ -73,23 +74,75 @@ let stateHeight = 0;
 let players: PlayerView[] = [];
 const net = createNetStats(els.debug);
 
-// Chain time = local time + offset. The newest block is stamped a little
-// before we see it, so the largest sample is the closest estimate.
-const offsetSamples: number[] = [];
+// Chain time = local time + offset. Two estimates:
+// - from the newest visible block. Blocks reach the RPC 2.5-3.3 s after their
+//   stamp on Futurenet, so this runs seconds slow; only spectators use it.
+// - from this browser's own input transactions: the stamp of the block each
+//   one landed in, minus when it was sent. That is the clock the crank that
+//   drains those inputs runs on, so players stamp inputs by it.
+//
+// The game clock eases toward each new estimate instead of jumping: a jump
+// forward leaves tics nobody sampled, a jump back stalls sampling, and either
+// way the inputs the chain gets stop matching the screen.
+const visibleSamples: number[] = [];
+const landedSamples: number[] = [];
+/** The offset the game clock runs on; eases toward `targetOffsetMs`. */
 let offsetMs = 0;
+let targetOffsetMs: number | null = null;
+let easedAt = Date.now();
+/** While easing, the game clock runs at most this much fast or slow. */
+const CLOCK_EASE = 0.05;
+let lastLandedSampleAt = 0;
+const LANDED_SAMPLE_EVERY_MS = 3000;
+const KEEP_SAMPLES = 9;
+
+function updateOffset(): void {
+  if (landedSamples.length) {
+    const sorted = [...landedSamples].sort((a, b) => a - b);
+    targetOffsetMs = sorted[sorted.length >> 1];
+  } else if (visibleSamples.length) {
+    // The newest block is stamped before we see it, so the largest sample is the closest.
+    targetOffsetMs = Math.max(...visibleSamples);
+  }
+  // Nothing on screen depends on the clock yet, so it may jump.
+  if (mySlot < 0 && targetOffsetMs !== null) offsetMs = targetOffsetMs;
+}
+
+function keep(samples: number[], value: number): void {
+  samples.push(value);
+  if (samples.length > KEEP_SAMPLES) samples.shift();
+  updateOffset();
+}
 
 async function syncClock(): Promise<void> {
   try {
-    offsetSamples.push(await sampleClockOffset());
-    if (offsetSamples.length > 6) offsetSamples.shift();
-    offsetMs = Math.max(...offsetSamples);
+    keep(visibleSamples, await sampleClockOffset());
   } catch {
     // Keep the previous estimate; the next sample will retry.
   }
 }
 
+/** Samples the landed-block clock from an input transaction, once it has landed. */
+async function sampleLanded(hash: string, sentAt: number): Promise<void> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const offset = await inclusionOffset(hash, sentAt);
+      if (offset !== null) return keep(landedSamples, offset);
+    } catch {
+      // Try again; a missed sample only delays the estimate.
+    }
+  }
+}
+
 function chainNowMs(): number {
-  return Date.now() + offsetMs;
+  const now = Date.now();
+  if (targetOffsetMs !== null) {
+    const step = (now - easedAt) * CLOCK_EASE;
+    offsetMs += Math.max(-step, Math.min(step, targetOffsetMs - offsetMs));
+  }
+  easedAt = now;
+  return now + offsetMs;
 }
 
 function presentTic(): number {
@@ -102,7 +155,8 @@ function presentTic(): number {
 const myInputs = new Map<number, number>();
 let lastSampled = -1;
 let sentThrough = -1;
-let sending = false;
+/** Earliest tic of a send that failed, to resend from. */
+let failedFrom = Infinity;
 
 const controls = new Controls(els.view, (dir) => {
   const active = players.filter((p) => p.active);
@@ -124,19 +178,28 @@ function inputsFrom(start: number, end: number): Uint8Array {
   return out;
 }
 
+/**
+ * Sends the inputs sampled since the last send, without waiting for earlier
+ * sends to land: a send takes over a second, and an input that waits that
+ * long to leave can reach the chain after its tic was simulated.
+ */
 async function sendInputs(): Promise<void> {
-  if (!session || mySlot < 0 || sending) return;
-  const from = Math.max(sentThrough + 1, engine.confirmedTic);
+  if (!session || mySlot < 0) return;
+  const from = Math.max(Math.min(sentThrough + 1, failedFrom), engine.confirmedTic);
   const to = Math.min(lastSampled, from + MAX_BATCH - 1);
   if (to < from) return;
-  sending = true;
+  failedFrom = Infinity;
+  sentThrough = Math.max(sentThrough, to);
+  const sentAt = Date.now();
   try {
-    await session.sendInputs(from, inputsFrom(from, to));
-    sentThrough = to;
+    const hash = await session.sendInputs(from, inputsFrom(from, to));
+    if (sentAt - lastLandedSampleAt > LANDED_SAMPLE_EVERY_MS) {
+      lastLandedSampleAt = sentAt;
+      void sampleLanded(hash, sentAt);
+    }
   } catch (err) {
-    console.warn('send_inputs failed; retrying next round', err);
-  } finally {
-    sending = false;
+    console.warn('send_inputs failed; resending', err);
+    failedFrom = Math.min(failedFrom, from);
   }
   for (const t of myInputs.keys()) if (t < engine.confirmedTic - 10) myInputs.delete(t);
 }
@@ -153,11 +216,15 @@ async function pollState(): Promise<void> {
     if (!state || state.height === stateHeight) return;
     const before = engine.confirmedTic;
     if (!engine.loadState(state.bytes)) return;
-    if (haveState && engine.confirmedTic > before) net.advanced();
+    if (engine.confirmedTic > before) {
+      lastAdvanceAt = Date.now();
+      if (haveState) net.advanced();
+    }
     haveState = true;
     stateHeight = state.height;
     if (!feedPoll) feedPoll = await createEventFeed(Math.max(0, stateHeight - 30));
     if (session) mySlot = engine.slotOf(session.id);
+    if (mySlot >= 0) checkPrediction();
     if (wasSeated && mySlot < 0) {
       showLobby('You went quiet for a minute and left the arena. Enter again to play.');
     }
@@ -177,6 +244,19 @@ const firstReport = (e: { tic: number; killerSlot: number; victimSlot: number },
   return true;
 };
 
+/**
+ * Did the chain put this player where the browser predicted it would, at the
+ * newly confirmed tic? A miss means the screen snaps (the readout's corrections).
+ */
+function checkPrediction(): void {
+  const predicted = ownTrace.get(engine.confirmedTic);
+  if (!predicted) return;
+  const chain = engine.players(false)[mySlot];
+  net.checked(Math.hypot(predicted.x - chain.x, predicted.y - chain.y) > 0.01);
+}
+/** The player's predicted position per tic, until the chain confirms it. */
+const ownTrace = new Map<number, { x: number; y: number }>();
+
 async function pollEvents(): Promise<void> {
   if (!feedPoll) return;
   try {
@@ -193,11 +273,8 @@ async function pollEvents(): Promise<void> {
   }
 }
 
-/** How long ago the crank behind the confirmed state ran: it simulated up to SIM_DELAY before its block. */
-function msSinceCrank(): number {
-  const crankedAt = engine.genesisMs + ((engine.confirmedTic + engine.simDelay) * 1000) / engine.ticsPerSecond;
-  return chainNowMs() - crankedAt;
-}
+/** Wall time since a read state last moved the arena forward. */
+let lastAdvanceAt = 0;
 
 let lastCrankPeriod = -1;
 
@@ -210,7 +287,7 @@ async function maybeCrank(): Promise<void> {
   if (!session || !haveState) return;
   const period = Math.floor(chainNowMs() / CRANK_EVERY_MS);
   if (period === lastCrankPeriod) return;
-  if (mySlot < 0 && msSinceCrank() < CRANK_RESCUE_MS) return;
+  if (mySlot < 0 && Date.now() - lastAdvanceAt < CRANK_RESCUE_MS) return;
   lastCrankPeriod = period;
   net.crankSent();
   session.crank().catch((err) => console.warn('crank failed', err));
@@ -245,10 +322,15 @@ async function enter(): Promise<void> {
     els.lobbyStatus.textContent = 'Getting test tokens from the Futurenet faucet…';
     await session.ensureFunds();
     els.lobbyStatus.textContent = 'Asking the arena for a seat…';
-    await session.join();
+    const joinSentAt = Date.now();
+    const joinHash = await session.join();
+    // Set the clock from the join before taking a seat, so it doesn't have to
+    // ease seconds while the player moves.
+    const clockReady = sampleLanded(joinHash, joinSentAt);
     // The join only takes effect when a crank drains the queue.
     setTimeout(() => session?.crank().catch(() => {}), 2200);
     els.lobbyStatus.textContent = 'Waiting for the chain to seat you…';
+    await clockReady;
     const seated = await waitFor(() => mySlot >= 0, 20_000);
     if (!seated) {
       const full = players.filter((p) => p.active).length >= engine.maxPlayers;
@@ -409,7 +491,9 @@ function trackSnaps(): void {
     if (at) seen.set(p.slot, at);
   }
   const me = players[mySlot];
-  net.track(seen, me.alive ? { x: me.x, y: me.y } : null);
+  ownTrace.set(engine.predictedTic, { x: me.x, y: me.y });
+  for (const t of ownTrace.keys()) if (t < engine.confirmedTic) ownTrace.delete(t);
+  net.track(engine.predictedTic, seen, me.alive ? { x: me.x, y: me.y } : null);
 }
 
 // Board updates on a slower beat than frames; it's text, not motion.

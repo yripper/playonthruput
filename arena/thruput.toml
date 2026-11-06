@@ -31,7 +31,7 @@ network = "futurenet"
 # default_wallet = "alice"
 
 [profile.futurenet.contracts]
-arena = "HXWNvZQfn4YnALC83kXWNd9ccu8ytjFvcfv3n8kKuh3Y"
+arena = "6kJjYNByNncx8oMjWipewY3AVNbFofK96RgPCThHCQtc"
 # arena = "11111111111111111111111111111111"
 
 # [profile.futurenet.wallets.alice]

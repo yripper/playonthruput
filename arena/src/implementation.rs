@@ -13,7 +13,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use engine::arena::{self, Arena, CHUNK_LEN, KillLog, STATE_CHUNKS, STATE_LEN, STORED_LEN};
+use engine::arena::{self, Arena, CHUNK_LEN, KillLog, Overflow, STATE_CHUNKS, STATE_LEN, STORED_LEN};
 use engine::render::FB_BYTES;
 use engine::rle;
 use thruput_sdk::storage::{Bytestring, Flaggable, Map, RCQ};
@@ -104,7 +104,7 @@ fn address(id: &[u8; 32]) -> ContractAddress {
 
 /// Applies one queue entry. Malformed entries are skipped, never thrown:
 /// aborting here would leave the entry at the queue's head and jam the arena.
-fn apply_entry(arena: &mut Arena, entry: &[u8; ENTRY_LEN]) {
+fn apply_entry(arena: &mut Arena, overflow: &mut Overflow, entry: &[u8; ENTRY_LEN]) {
     let mut id = [0u8; 32];
     id.copy_from_slice(&entry[1..33]);
     match entry[0] {
@@ -115,7 +115,7 @@ fn apply_entry(arena: &mut Arena, entry: &[u8; ENTRY_LEN]) {
             let start = u32::from_le_bytes([entry[33], entry[34], entry[35], entry[36]]);
             let len = (entry[37] as usize).min(MAX_BATCH);
             if let Some(slot) = arena.slot_of(&id) {
-                arena.apply_inputs(slot, start, &entry[INPUT_HEADER_LEN..INPUT_HEADER_LEN + len]);
+                arena.apply_inputs_overflowing(slot, start, &entry[INPUT_HEADER_LEN..INPUT_HEADER_LEN + len], overflow);
             }
         }
         _ => {}
@@ -128,6 +128,14 @@ fn boxed_arena() -> Box<Arena> {
     // SAFETY: `Arena` is integers, bools and arrays of them (no references,
     // no niches beyond bool), and all-zero bytes are a valid value of each.
     unsafe { Box::<Arena>::new_zeroed().assume_init() }
+}
+
+/// The crank's input overflow (4 KiB), on the heap for the same reason.
+fn boxed_overflow(arena: &Arena) -> Box<Overflow> {
+    // SAFETY: `Overflow` is integers and arrays of them; all-zero is valid.
+    let mut overflow = unsafe { Box::<Overflow>::new_zeroed().assume_init() };
+    overflow.open(arena);
+    overflow
 }
 
 impl ArenaServer {
@@ -158,11 +166,11 @@ impl ArenaServer {
         arena.reset(now, seed);
     }
 
-    fn _drain(&mut self, arena: &mut Arena) -> u32 {
+    fn _drain(&mut self, arena: &mut Arena, overflow: &mut Overflow) -> u32 {
         let mut entries = 0;
         while entries < MAX_ENTRIES_PER_CRANK {
             match self.queue.try_consume_sized::<ENTRY_LEN>() {
-                Ok(entry) => apply_entry(arena, &entry),
+                Ok(entry) => apply_entry(arena, overflow, &entry),
                 // Only this contract inserts, always ENTRY_LEN bytes; discard
                 // anything else rather than let it block the head.
                 Err(LibraryExn::RetrocausalQueueEntryWrongSize { .. }) => {
@@ -235,10 +243,13 @@ impl ArenaServer {
         if !self._load(&mut arena, &mut buf) {
             self._open(&mut arena);
         }
-        let entries = self._drain(&mut arena);
+        // A late crank finds players' newest inputs past the ring; the
+        // overflow holds them until the arena advances far enough.
+        let mut overflow = boxed_overflow(&arena);
+        let entries = self._drain(&mut arena, &mut overflow);
         let now = arena::tic_at(arena.genesis_ns, *get_block_timepoint());
         let mut kills = KillLog::new();
-        arena.advance_to(now.saturating_sub(arena::SIM_DELAY), &mut kills);
+        arena.advance_with_overflow(now.saturating_sub(arena::SIM_DELAY), &mut kills, &mut overflow);
         emit_kills(&arena, &kills);
         self._store(&arena, &mut buf);
         CrankReport {

@@ -4,8 +4,9 @@
 
 /** Samples kept per list: about a minute and a half of frames. */
 const KEEP = 6000;
-/** One frame covers a few tics at most, and a tic moves 0.1 units, so a bigger jump is a correction. */
+/** A tic moves at most 0.1 units (0.15 diagonally); a jump this much beyond that is a correction. */
 const SNAP_UNITS = 0.5;
+const MAX_UNITS_PER_TIC = 0.15;
 
 export interface NetStats {
   /** Predict + render time per frame, ms. */
@@ -16,6 +17,9 @@ export interface NetStats {
   behindS: number[];
   opponentSnaps: number;
   ownSnaps: number;
+  /** New states that put the player somewhere other than predicted, of all checked. */
+  corrections: number;
+  checks: number;
   cranksSent: number;
 }
 
@@ -28,6 +32,8 @@ export function createNetStats(panel: HTMLElement) {
     behindS: [],
     opponentSnaps: 0,
     ownSnaps: 0,
+    corrections: 0,
+    checks: 0,
     cranksSent: 0,
   };
   (window as unknown as { netStats: NetStats }).netStats = stats;
@@ -44,7 +50,9 @@ export function createNetStats(panel: HTMLElement) {
     list.push(value);
     if (list.length > KEEP) list.shift();
   };
-  const moved = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y) > SNAP_UNITS;
+  let lastTic = -1;
+  const jumped = (a: Point, b: Point, tics: number) =>
+    Math.hypot(a.x - b.x, a.y - b.y) > SNAP_UNITS + MAX_UNITS_PER_TIC * tics;
 
   return {
     stats,
@@ -62,15 +70,22 @@ export function createNetStats(panel: HTMLElement) {
     },
 
     /** Counts frame-to-frame jumps: opponents where they're drawn, and the player's own position. */
-    track(seen: Map<number, Point>, own: Point | null): void {
+    track(tic: number, seen: Map<number, Point>, own: Point | null): void {
+      const tics = lastTic < 0 ? 0 : tic - lastTic;
+      lastTic = tic;
       for (const [slot, p] of seen) {
         const before = lastSeen.get(slot);
-        if (before && moved(before, p)) stats.opponentSnaps++;
+        if (before && jumped(before, p, tics)) stats.opponentSnaps++;
       }
       lastSeen.clear();
       for (const [slot, p] of seen) lastSeen.set(slot, p);
-      if (own && lastOwn && moved(lastOwn, own)) stats.ownSnaps++;
+      if (own && lastOwn && jumped(lastOwn, own, tics)) stats.ownSnaps++;
       lastOwn = own;
+    },
+
+    checked(corrected: boolean): void {
+      stats.checks++;
+      if (corrected) stats.corrections++;
     },
 
     crankSent(): void {
@@ -86,6 +101,7 @@ export function createNetStats(panel: HTMLElement) {
         `new state     every ${(avg(stats.stateGapsMs) / 1000).toFixed(1)} s, worst ${(worst(stats.stateGapsMs) / 1000).toFixed(1)} s`,
         `frame         ${avg(stats.frameMs).toFixed(1)} ms avg, ${worst(stats.frameMs).toFixed(1)} ms worst`,
         `snaps         opponents ${stats.opponentSnaps}, you ${stats.ownSnaps}`,
+        `corrections   ${stats.corrections} of ${stats.checks} states`,
         `cranks sent   ${stats.cranksSent}`,
       ].join('\n');
     },

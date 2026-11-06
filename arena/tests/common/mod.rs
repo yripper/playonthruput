@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use arena::{ArenaServerClient, CrankReport};
-use engine::arena::{Arena, KillLog, SIM_DELAY, STATE_LEN, tic_at};
+use engine::arena::{Arena, KillLog, Overflow, SIM_DELAY, STATE_LEN, tic_at};
 use thruput_sdk::*;
 
 static NONCE: SHA256Hash = thruput_sdk::sha256_static!("ARENA_TEST_NONCE");
@@ -172,11 +172,13 @@ impl World {
 
 /// Mirrors one crank on a local copy: apply queued inputs, then simulate.
 pub fn local_crank(arena: &mut Arena, target: u32, inputs: &[(usize, u32, Vec<u8>)]) -> KillLog {
+    let mut overflow = Overflow::new();
+    overflow.open(arena);
     for (slot, start, buttons) in inputs {
-        arena.apply_inputs(*slot, *start, buttons);
+        arena.apply_inputs_overflowing(*slot, *start, buttons, &mut overflow);
     }
     let mut kills = KillLog::new();
-    arena.advance_to(target, &mut kills);
+    arena.advance_with_overflow(target, &mut kills, &mut overflow);
     kills
 }
 
