@@ -108,6 +108,71 @@ fn inputs_outside_the_window_are_dropped() {
     assert_eq!(arena.players[a].last_input, 11);
 }
 
+/// What a late crank meets: the arena stopped long ago, and a player's newest
+/// inputs are stamped more than `INPUT_RING` tics past it.
+#[test]
+fn inputs_beyond_the_ring_are_kept_through_the_crank() {
+    let mut arena = Arena::new(T0, 1);
+    let a = arena.join(&id(1)).unwrap();
+    step_n(&mut arena, 10);
+    let t = arena.tic;
+    // A batch straddling the ring's far edge: 4 tics inside, 4 past it.
+    let edge = t + INPUT_RING as u32;
+    let mut overflow = Overflow::new();
+    overflow.open(&arena);
+    arena.apply_inputs_overflowing(a, edge - 4, &[input::FORWARD; 8], &mut overflow);
+    assert_eq!(arena.players[a].last_input, edge + 3, "late inputs count as activity");
+    assert_eq!(arena.input_at(a, edge - 4), input::FORWARD, "the in-window part goes straight in");
+    assert_eq!(arena.input_at(a, edge), 0, "the rest waits in the overflow");
+
+    arena.advance_with_overflow(t + 100, &mut KillLog::new(), &mut overflow);
+    for tic in edge - 4..edge + 4 {
+        assert_eq!(arena.input_at(a, tic), input::FORWARD, "tic {tic} is in the ring");
+    }
+    assert_eq!(arena.input_at(a, edge + 4), 0);
+}
+
+#[test]
+fn overflow_matches_buffering_after_the_fact() {
+    // Moving overflow in as the arena advances must equal buffering the same
+    // inputs once they're in the window.
+    let mut early = Arena::new(T0, 3);
+    let a = early.join(&id(1)).unwrap();
+    step_n(&mut early, 10);
+    let mut late = early.clone();
+    let start = early.tic + INPUT_RING as u32 - 30;
+    let buttons: Vec<u8> = (0..120u32).map(|i| [input::FORWARD, input::TURN_LEFT, input::STRAFE_RIGHT][(i / 17) as usize % 3]).collect();
+
+    let mut overflow = Overflow::new();
+    overflow.open(&early);
+    early.apply_inputs_overflowing(a, start, &buttons, &mut overflow);
+    early.advance_with_overflow(start + 40, &mut KillLog::new(), &mut overflow);
+    step_n(&mut early, 140);
+
+    step_n(&mut late, 100);
+    late.apply_inputs(a, start, &buttons);
+    late.advance_to(start + 40, &mut KillLog::new());
+    step_n(&mut late, 140);
+
+    let mut scratch = vec![0u8; STORED_LEN];
+    assert_eq!(early.state_hash(&mut scratch), late.state_hash(&mut scratch));
+}
+
+#[test]
+fn overflow_survives_a_catch_up_skip() {
+    let mut arena = Arena::new(T0, 1);
+    let a = arena.join(&id(1)).unwrap();
+    step_n(&mut arena, 10);
+    let t = arena.tic;
+    let mut overflow = Overflow::new();
+    overflow.open(&arena);
+    let far = t + INPUT_RING as u32 + 100;
+    arena.apply_inputs_overflowing(a, far, &[input::FORWARD; 4], &mut overflow);
+    // Far enough behind to skip, but the skip lands before the overflowed tics.
+    arena.advance_with_overflow(far - 10, &mut KillLog::new(), &mut overflow);
+    assert_eq!(arena.input_at(a, far), input::FORWARD);
+}
+
 #[test]
 fn buffered_inputs_move_the_player_on_their_tic() {
     let mut arena = Arena::new(T0, 1);

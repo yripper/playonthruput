@@ -112,6 +112,48 @@ impl Default for KillLog {
     }
 }
 
+/// Inputs that reach a crank too far ahead for the ring: from `INPUT_RING`
+/// to `2 * INPUT_RING` tics past the arena. A crank that comes late meets
+/// players' newest inputs stamped there. They're held for that one crank and
+/// moved into the ring as it advances; never stored, since by the end of the
+/// crank the ring reaches past any tic a player could have stamped.
+#[derive(Clone)]
+pub struct Overflow {
+    /// First tic past the ring when the crank started.
+    from: u32,
+    /// Next overflowed tic not yet moved into the ring.
+    next: u32,
+    buttons: [[u8; INPUT_RING]; MAX_PLAYERS],
+}
+
+impl Overflow {
+    /// All zeros is a valid (empty) overflow too, for building it on the heap.
+    pub const fn new() -> Self {
+        Self { from: 0, next: 0, buttons: [[0; INPUT_RING]; MAX_PLAYERS] }
+    }
+
+    /// Starts holding the tics just past `arena`'s ring.
+    pub fn open(&mut self, arena: &Arena) {
+        self.from = arena.tic + INPUT_RING as u32;
+        self.next = self.from;
+        self.buttons = [[0; INPUT_RING]; MAX_PLAYERS];
+    }
+
+    fn end(&self) -> u32 {
+        self.from + INPUT_RING as u32
+    }
+
+    fn covers(&self, t: u32) -> bool {
+        (self.from..self.end()).contains(&t)
+    }
+}
+
+impl Default for Overflow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Clone)]
 pub struct Arena {
     /// Unix time (ns) of tic 0.
@@ -193,12 +235,25 @@ impl Arena {
     /// Buffers `buttons` for tics `start..start + len`. Tics already simulated,
     /// or too far ahead to buffer, are dropped.
     pub fn apply_inputs(&mut self, slot: usize, start: u32, buttons: &[u8]) {
+        self.buffer_inputs(slot, start, buttons, None);
+    }
+
+    /// Like `apply_inputs`, but tics up to another `INPUT_RING` further ahead
+    /// go to `overflow` instead of being dropped.
+    pub fn apply_inputs_overflowing(&mut self, slot: usize, start: u32, buttons: &[u8], overflow: &mut Overflow) {
+        self.buffer_inputs(slot, start, buttons, Some(overflow));
+    }
+
+    fn buffer_inputs(&mut self, slot: usize, start: u32, buttons: &[u8], mut overflow: Option<&mut Overflow>) {
         let window = self.tic..self.tic + INPUT_RING as u32;
         let mut latest = None;
         for (i, &b) in buttons.iter().enumerate() {
             let t = start.wrapping_add(i as u32);
             if window.contains(&t) {
                 self.inputs[slot][t as usize % INPUT_RING] = b;
+                latest = Some(t);
+            } else if let Some(o) = overflow.as_deref_mut().filter(|o| o.covers(t)) {
+                o.buttons[slot][t as usize % INPUT_RING] = b;
                 latest = Some(t);
             }
         }
@@ -229,12 +284,40 @@ impl Arena {
     /// Simulates up to (not including) `target`, skipping ahead first if the
     /// arena sat idle longer than `MAX_STEPS`.
     pub fn advance_to(&mut self, target: u32, kills: &mut KillLog) {
+        self.advance(target, kills, None);
+    }
+
+    /// Like `advance_to`, moving `overflow` into the ring as tics enter it.
+    pub fn advance_with_overflow(&mut self, target: u32, kills: &mut KillLog, overflow: &mut Overflow) {
+        self.advance(target, kills, Some(overflow));
+    }
+
+    fn advance(&mut self, target: u32, kills: &mut KillLog, mut overflow: Option<&mut Overflow>) {
         if target > self.tic + MAX_STEPS {
             self.skip_to(target - MAX_STEPS);
         }
+        if let Some(o) = overflow.as_deref_mut() {
+            self.pull_overflow(o);
+        }
         while self.tic < target {
             self.step(kills);
+            if let Some(o) = overflow.as_deref_mut() {
+                self.pull_overflow(o);
+            }
         }
+    }
+
+    /// Moves overflowed tics that are now inside the ring window into it.
+    /// Their ring slots are free: no tic that far ahead was ever in the window.
+    fn pull_overflow(&mut self, o: &mut Overflow) {
+        let end = (self.tic + INPUT_RING as u32).min(o.end());
+        for t in o.next.max(self.tic)..end {
+            let i = t as usize % INPUT_RING;
+            for slot in 0..MAX_PLAYERS {
+                self.inputs[slot][i] = o.buttons[slot][i];
+            }
+        }
+        o.next = o.next.max(end);
     }
 
     /// Jumps forward without simulating: nobody moves, buffered inputs for
