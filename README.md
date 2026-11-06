@@ -2,7 +2,7 @@
 
 An **original** retro first-person deathmatch where **the chain is the game server**. It uses our own engine, map and art; it is not a port or clone of DOOM. There is no backend: a static site talks to Thruput Futurenet directly.
 
-- **Arena contract (Futurenet):** `HXWNvZQfn4YnALC83kXWNd9ccu8ytjFvcfv3n8kKuh3Y`
+- **Arena contract (Futurenet):** `6kJjYNByNncx8oMjWipewY3AVNbFofK96RgPCThHCQtc`
 - **Run the client:** `cd web && npm install && npm run dev`. `npm run build` rebuilds the wasm engine and the static site into `web/dist`.
 
 ## How the arena works
@@ -148,3 +148,10 @@ A contract raycasts one 160-column view and emits ~320 bytes: wall distance + te
   - `wasm/`: the engine for browsers. `web/`: the Vite client.
   - Verified with two headless Chrome players on Futurenet: seated within ~8 s, shots and kills confirmed on chain, kill cam shown on the victim's screen.
   - Bug found live: the crank that seats the first player in a sleeping arena also skips ahead, and the idle kick removed that player at once. Fixed in `skip_to`.
+- 2026-11-06: **netcode: no more self-snaps.** Measured with two headless players moving for 90 s (`?debug` or the `` ` `` key shows the same readout). Contract redeployed as `6kJjYNBy…`.
+  - **Clock (main cause).** Blocks reach the RPC 2.5–3.3 s after their stamp, so a clock read from the newest block ran ~2.5 s slow and inputs reached the chain about when their tics were simulated. Players now clock from their own transactions (stamp of the block each landed in minus send time, median of 9), seeded from the join tx, and the game clock eases toward new estimates (≤5 % fast/slow) instead of jumping. Jumps had left unsampled or stalled tics. Result: 0 of ~40 confirmed states disagree with the player's prediction (was ~9 in 10).
+  - **Cranks.** Every seated browser cranks once per 2.03 s block. Only one crank per block drains the queue; extras are deferred to the next block, so no block goes uncranked (state every 2.05 s, was 2.85 s; worst gap ~3.5 s, was 7.8 s). Duplicate kill reports from cranks sharing a block are filtered.
+  - **Late cranks.** Inputs more than 256 tics past where the arena stopped are held in a per-crank overflow (`engine::arena::Overflow`) and moved in as the arena advances, instead of being dropped.
+  - **Reads.** State chunks read at different heights are rejected; a crank landing between reads had mixed two states.
+  - **Opponents.** Drawn easing toward corrected positions (≤3 tics of running per frame; respawns jump). Snaps 13 and 2 per 90 s, was 24–39. Guessing opponents' moves was tried and made it worse.
+  - Still true: opponents' inputs reach other browsers ~5 s after they happen (send + block + RPC visibility), longer than the 3 s `REWIND`, so their drawn position is often a correction in progress.

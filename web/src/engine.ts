@@ -86,6 +86,10 @@ export class Engine {
     return this.x.confirmed_tic();
   }
 
+  get predictedTic(): number {
+    return this.x.predicted_tic();
+  }
+
   get genesisMs(): number {
     return this.x.genesis_ms();
   }

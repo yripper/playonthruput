@@ -1,7 +1,7 @@
 // Where the arena lives. Everything else is read from the chain at runtime.
 
 export const RPC_URL = 'https://rpc.thruput.network';
-export const ARENA_ADDRESS = 'HXWNvZQfn4YnALC83kXWNd9ccu8ytjFvcfv3n8kKuh3Y';
+export const ARENA_ADDRESS = '6kJjYNByNncx8oMjWipewY3AVNbFofK96RgPCThHCQtc';
 
 /** Storage keys of the three state chunks (`state_keys()` on the contract). */
 export const STATE_KEYS = [

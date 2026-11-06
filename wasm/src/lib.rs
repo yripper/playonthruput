@@ -10,7 +10,7 @@
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use engine::arena::{self, Arena, KillLog, MAX_PLAYERS, PLAYER_COLORS, REWIND, STORED_LEN};
+use engine::arena::{self, Arena, KillLog, MAX_PLAYERS, PLAYER_COLORS, STORED_LEN};
 use engine::map::ARENA;
 use engine::render::{self, FB_BYTES, H, PALETTE, Sprite, View, W};
 use engine::rle;
@@ -46,6 +46,13 @@ pub const KILLCAM_CAP: usize = 2048;
 /// Fields per player in `players`: active, alive, x, y, angle, hp, frags,
 /// deaths, respawn_at, color.
 pub const PLAYER_FIELDS: usize = 10;
+/// Each frame, a drawn opponent covers this share of the way to where they're
+/// seen, but no more than `EASE_MAX` (three tics of running): a correction
+/// glides over a few hundred ms instead of snapping.
+const EASE_SHARE: i32 = 4;
+const EASE_MAX: i32 = engine::fx::ONE * 3 / 10;
+/// Further than this (a respawn), the opponent is drawn there at once.
+const TELEPORT: i32 = 4 * engine::fx::ONE;
 /// Prediction never runs more than this many tics in one frame.
 const MAX_PREDICT_STEPS: u32 = 600;
 /** Re-buffering own inputs this often keeps the ring ahead of a long prediction. */
@@ -61,6 +68,8 @@ static RGBA: Global<[u8; RGBA_LEN]> = zeroed();
 static KILLCAM: Global<[u8; KILLCAM_CAP]> = zeroed();
 static KILLCAM_RGBA: Global<[u8; RGBA_LEN]> = zeroed();
 static PLAYERS: Global<[i32; MAX_PLAYERS * PLAYER_FIELDS]> = zeroed();
+/// Where each opponent is drawn: eased toward where they were seen.
+static SHOWN: Global<[Option<(i32, i32)>; MAX_PLAYERS]> = Global(UnsafeCell::new([None; MAX_PLAYERS]));
 
 #[unsafe(no_mangle)]
 pub extern "C" fn state_ptr() -> *mut u8 {
@@ -174,26 +183,16 @@ pub extern "C" fn predict(slot: i32, start: u32, len: u32, target: u32) {
     }
 }
 
-/// Where the player sees `slot` drawn (`REWIND` back), as raw fixed point,
-/// or `i32::MIN` when it isn't drawn. For measuring snaps.
+/// Where the player sees `slot` drawn, as raw fixed point, or `i32::MIN`
+/// when it isn't drawn. For measuring snaps.
 #[unsafe(no_mangle)]
 pub extern "C" fn seen_x(slot: u32) -> i32 {
-    seen(slot).map_or(i32::MIN, |(x, _)| x)
+    SHOWN.get()[slot as usize % MAX_PLAYERS].map_or(i32::MIN, |(x, _)| x)
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn seen_y(slot: u32) -> i32 {
-    seen(slot).map_or(i32::MIN, |(_, y)| y)
-}
-
-fn seen(slot: u32) -> Option<(i32, i32)> {
-    let a = PREDICTED.get();
-    let slot = slot as usize % MAX_PLAYERS;
-    let p = &a.players[slot];
-    if !p.active || !p.alive {
-        return None;
-    }
-    a.position_at(slot, a.tic.checked_sub(REWIND)?)
+    SHOWN.get()[slot as usize % MAX_PLAYERS].map_or(i32::MIN, |(_, y)| y)
 }
 
 /// Fills `PLAYERS` from the predicted (`which` = 1) or confirmed arena.
@@ -218,29 +217,44 @@ pub extern "C" fn snapshot(which: u32) {
 
 /// Renders the predicted arena into `RGBA` from `slot`'s eyes. Playing
 /// (`spectate` = 0): others appear where the chain will check shots against
-/// them (`REWIND` tics back). Spectating: everyone at their exact position,
-/// for a prediction that stops where everyone's inputs are known.
+/// them (`REWIND` tics back), eased so corrections glide. Spectating: everyone
+/// at their exact position, for a prediction that stops where everyone's
+/// inputs are known.
 #[unsafe(no_mangle)]
 pub extern "C" fn render(slot: u32, spectate: u32) {
     let slot = slot as usize % MAX_PLAYERS;
     let a = PREDICTED.get();
+    let shown = SHOWN.get();
     let mut sprites = [Sprite { x: 0, y: 0, color: 0 }; MAX_PLAYERS];
-    let count = if spectate == 0 {
-        a.sprites_seen_by(Some(slot), a.tic.saturating_sub(1), &mut sprites)
-    } else {
-        let mut n = 0;
-        for (o, p) in a.players.iter().enumerate() {
-            if o != slot && p.active && p.alive {
-                sprites[n] = Sprite { x: p.x, y: p.y, color: PLAYER_COLORS[o] };
-                n += 1;
-            }
+    let mut count = 0;
+    for (o, p) in a.players.iter().enumerate() {
+        let at = if o == slot || !p.active || !p.alive {
+            None
+        } else if spectate == 0 {
+            a.seen_position(o, a.tic)
+        } else {
+            Some((p.x, p.y))
+        };
+        shown[o] = at.map(|target| ease(shown[o], target));
+        if let Some((x, y)) = shown[o] {
+            sprites[count] = Sprite { x, y, color: PLAYER_COLORS[o] };
+            count += 1;
         }
-        n
-    };
+    }
     let p = &a.players[slot];
     let view = View { x: p.x, y: p.y, angle: p.angle };
     render::render_view(&ARENA, &view, &sprites[..count], FB.get());
     to_rgba(FB.get(), RGBA.get());
+}
+
+fn ease(from: Option<(i32, i32)>, (tx, ty): (i32, i32)) -> (i32, i32) {
+    match from {
+        Some((x, y)) if (tx - x).abs() < TELEPORT && (ty - y).abs() < TELEPORT => {
+            let step = |d: i32| (d / EASE_SHARE).clamp(-EASE_MAX, EASE_MAX);
+            (x + step(tx - x), y + step(ty - y))
+        }
+        _ => (tx, ty),
+    }
 }
 
 /// Decodes a `KillCam` event frame from `KILLCAM[..len]` into `KILLCAM_RGBA`.

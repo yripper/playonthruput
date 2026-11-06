@@ -425,7 +425,7 @@ impl Arena {
 
     /// Where `target` appeared to a shooter firing at tic `t`, or `None` if
     /// they hadn't spawned yet in that view (spawn protection).
-    fn seen_position(&self, target: usize, t: u32) -> Option<(Fx, Fx)> {
+    pub fn seen_position(&self, target: usize, t: u32) -> Option<(Fx, Fx)> {
         let seen = t.checked_sub(REWIND)?;
         if seen < self.players[target].spawned_at {
             return None;
