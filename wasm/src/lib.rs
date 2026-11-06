@@ -10,7 +10,7 @@
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use engine::arena::{self, Arena, KillLog, MAX_PLAYERS, PLAYER_COLORS, STORED_LEN};
+use engine::arena::{self, Arena, KillLog, MAX_PLAYERS, PLAYER_COLORS, REWIND, STORED_LEN};
 use engine::map::ARENA;
 use engine::render::{self, FB_BYTES, H, PALETTE, Sprite, View, W};
 use engine::rle;
@@ -48,6 +48,8 @@ pub const KILLCAM_CAP: usize = 2048;
 pub const PLAYER_FIELDS: usize = 10;
 /// Prediction never runs more than this many tics in one frame.
 const MAX_PREDICT_STEPS: u32 = 600;
+/** Re-buffering own inputs this often keeps the ring ahead of a long prediction. */
+const REBUFFER_EVERY: u32 = 64;
 
 static CONFIRMED: Global<Arena> = zeroed();
 static PREDICTED: Global<Arena> = zeroed();
@@ -154,15 +156,44 @@ pub extern "C" fn slot_of() -> i32 {
 pub extern "C" fn predict(slot: i32, start: u32, len: u32, target: u32) {
     let predicted = PREDICTED.get();
     predicted.clone_from(CONFIRMED.get());
-    if slot >= 0 && (slot as usize) < MAX_PLAYERS {
+    let own = (slot >= 0 && (slot as usize) < MAX_PLAYERS).then_some(slot as usize);
+    if let Some(own) = own {
         let len = (len as usize).min(INPUTS_CAP);
-        predicted.apply_inputs(slot as usize, start, &INPUTS.get()[..len]);
+        predicted.apply_inputs(own, start, &INPUTS.get()[..len]);
     }
     let mut kills = KillLog::new();
     let end = target.min(predicted.tic + MAX_PREDICT_STEPS);
     while predicted.tic < end {
         predicted.step(&mut kills);
+        // The input ring only reaches INPUT_RING tics past the arena, so own
+        // inputs further ahead were dropped; re-buffer them as it advances.
+        if let Some(own) = own.filter(|_| predicted.tic.is_multiple_of(REBUFFER_EVERY)) {
+            let len = (len as usize).min(INPUTS_CAP);
+            predicted.apply_inputs(own, start, &INPUTS.get()[..len]);
+        }
     }
+}
+
+/// Where the player sees `slot` drawn (`REWIND` back), as raw fixed point,
+/// or `i32::MIN` when it isn't drawn. For measuring snaps.
+#[unsafe(no_mangle)]
+pub extern "C" fn seen_x(slot: u32) -> i32 {
+    seen(slot).map_or(i32::MIN, |(x, _)| x)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn seen_y(slot: u32) -> i32 {
+    seen(slot).map_or(i32::MIN, |(_, y)| y)
+}
+
+fn seen(slot: u32) -> Option<(i32, i32)> {
+    let a = PREDICTED.get();
+    let slot = slot as usize % MAX_PLAYERS;
+    let p = &a.players[slot];
+    if !p.active || !p.alive {
+        return None;
+    }
+    a.position_at(slot, a.tic.checked_sub(REWIND)?)
 }
 
 /// Fills `PLAYERS` from the predicted (`which` = 1) or confirmed arena.

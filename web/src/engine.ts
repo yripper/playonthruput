@@ -22,6 +22,8 @@ interface Exports {
   snapshot(which: number): void;
   render(slot: number, spectate: number): void;
   decode_killcam(len: number): number;
+  seen_x(slot: number): number;
+  seen_y(slot: number): number;
 }
 
 export const W = 160;
@@ -98,6 +100,13 @@ export class Engine {
     const len = Math.min(inputs.length, this.inputsCap);
     this.bytes(this.x.inputs_ptr(), len).set(inputs.subarray(0, len));
     this.x.predict(slot, start, len, target);
+  }
+
+  /** Where the player sees `slot` drawn, or null when it isn't drawn. */
+  seenPosition(slot: number): { x: number; y: number } | null {
+    const x = this.x.seen_x(slot);
+    if (x === -0x80000000) return null;
+    return { x: x / 65536, y: this.x.seen_y(slot) / 65536 };
   }
 
   players(predicted: boolean): PlayerView[] {
