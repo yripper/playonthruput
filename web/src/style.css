@@ -66,6 +66,32 @@ button {
   color: var(--stone);
 }
 
+.source {
+  margin-left: auto;
+  align-self: center;
+  display: flex;
+  color: var(--stone);
+}
+
+.source:hover,
+.source:focus-visible {
+  color: var(--lamp);
+}
+
+/* Once the tagline wraps, keep the link up beside the title instead of on a row of its own. */
+@media (max-width: 720px) {
+  .masthead {
+    position: relative;
+    padding-right: 3.5rem;
+  }
+
+  .source {
+    position: absolute;
+    top: 1.55rem;
+    right: 1.5rem;
+  }
+}
+
 .stage {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 300px;
